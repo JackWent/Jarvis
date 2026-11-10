@@ -41,4 +41,4 @@ Hostnames, addresses and personal details have been replaced with generic names,
 
 Edit the host lists at the top of `jarvis-fleet-status`, `jarvis-patch` and `jarvis-snapshot`, add your Discord webhook for `notify`, and point the runbooks in `skills/` at your own servers. The scripts assume SSH key access to each server and the Proxmox API for snapshots.
 
-No licence is attached yet, so all rights are reserved until one is added. If you'd like to reuse something, get in touch via [jackwent.co.uk](https://jackwent.co.uk/get-in-touch/).
+Released under the MIT licence. See [LICENSE](LICENSE).
