@@ -1,0 +1,8 @@
+[Unit]
+Description=Jarvis - get ready for the midnight auto-update.sh run
+
+[Timer]
+OnCalendar=*-*-* 23:45:00
+
+[Install]
+WantedBy=timers.target

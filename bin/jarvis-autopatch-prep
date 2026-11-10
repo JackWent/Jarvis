@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# jarvis-autopatch-prep: get Jarvis ready for its own midnight auto-update.sh run, which may reboot this VM.
+# Run at 23:45 by jarvis-autopatch-prep.timer. Does nothing when no updates are pending.
+#
+# 1. Asks the universal "Jarvis" session (tmux "jarvis") to save anything worth keeping to memory,
+#    because a reboot starts a fresh session.
+# 2. At 23:55, takes a Proxmox snapshot of this VM (disk only) and records its name in
+#    state/autopatch-snapshot, so the post-reboot check can delete it once all is well.
+#    Jarvis snapshots older than 3 days are pruned.
+# The reboot note itself is written at shutdown by jarvis-pre-reboot (jarvis-pre-reboot.service).
+set -uo pipefail
+
+STATE=/root/jarvis/state
+pending=$(apt-get -s -o Debug::NoLocking=1 dist-upgrade 2>/dev/null | grep -c '^Inst ')
+if [ "${pending:-0}" -eq 0 ]; then echo "no updates pending, nothing to prepare"; exit 0; fi
+
+if tmux has-session -t jarvis 2>/dev/null; then
+  tmux send-keys -t jarvis -l "[automatic, from jarvis-autopatch-prep] Jarvis patches itself at 00:00 ($pending update(s) pending) and may reboot, which starts a fresh session. Save anything from this conversation worth keeping to memory now (and a short handoff in .remember/now.md if work is in progress), don't start anything long, then reply 'ready for patching'."
+  sleep 1
+  tmux send-keys -t jarvis Enter
+fi
+
+sleep 600
+
+if snap=$(jarvis-snapshot create jarvis pre-autopatch 2>&1); then
+  mkdir -p "$STATE" && echo "$snap" > "$STATE/autopatch-snapshot"
+  echo "snapshot $snap"
+else
+  notify -c patching -l warn -t "Jarvis: no snapshot before patching" "jarvis-snapshot failed: $snap"$'\n'"Midnight patching will still run."
+fi
+jarvis-snapshot prune jarvis 3 || true

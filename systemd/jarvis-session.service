@@ -1,0 +1,21 @@
+# Jarvis universal session: one always-on Claude Code session in ~/jarvis, reachable via
+# Remote Control (named "Jarvis" in the Claude app on PC and phone).
+# Claude Code needs a terminal, so it runs inside a detached tmux session.
+# Attach with:  tmux attach -t jarvis   (detach: Ctrl-b then d)
+[Unit]
+Description=Jarvis - universal Claude Code session (Remote Control)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=/root/jarvis
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/tmux new-session -d -s jarvis -x 200 -y 50 -c /root/jarvis /usr/local/bin/jarvis-session
+ExecStop=/usr/bin/tmux kill-session -t jarvis
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# jarvis-pre-reboot: runs at shutdown (ExecStop of jarvis-pre-reboot.service). When auto-update.sh is
+# rebooting this VM mid-run (its progress file exists), it writes state/pending-reboot.md, so the
+# universal session starts by checking the patch run and reporting, as after a planned reboot.
+# A note that's already there (a reboot the owner approved) is left alone.
+set -uo pipefail
+
+# auto-update.sh keeps its progress in /var/lib/update-script; versions before 2026-11-09 used /var/log.
+PROGRESS=/var/lib/update-script/progress
+[ -f "$PROGRESS" ] || PROGRESS=/var/log/update-script-progress
+NOTE=/root/jarvis/state/pending-reboot.md
+[ -f "$PROGRESS" ] || exit 0
+[ -f "$NOTE" ] && exit 0
+
+snap=$(cat /root/jarvis/state/autopatch-snapshot 2>/dev/null)
+mkdir -p "$(dirname "$NOTE")"
+cat > "$NOTE" <<EOF
+# Reboot by auto-update.sh (nightly patching)
+
+Why: Jarvis's own midnight auto-update.sh run rebooted the VM at $(date '+%Y-%m-%d %H:%M') after step "$(cat "$PROGRESS")".
+Nobody asked for this reboot by hand; it's the nightly patching the owner set up on 2026-11-03.
+Snapshot taken before patching: ${snap:-none recorded}
+
+What to check:
+1. auto-update.sh resumes from @reboot. If it's still running (pgrep -f auto-update.sh), wait for it to finish.
+   It may reboot again; this file stays until you delete it.
+2. The run finished: /var/lib/update-script/progress is gone and apt has 0 updates pending.
+3. Services: jarvis-session, jarvis-remote-control and jarvis-orb are active; no failed units.
+4. Home Assistant shows "Jarvis Agent Online" on and "Jarvis Reboot Required" off.
+5. auto-update.sh posted its report to #server-patching (it does this itself; don't repost it).
+6. Earlier conversation context is gone: check memory and .remember/now.md for anything left in progress.
+
+If all is well: delete the snapshot (jarvis-snapshot delete jarvis <name>) and state/autopatch-snapshot,
+then notify -c patching -l ok with a one-line "Jarvis back after patching" summary.
+If not: keep the snapshot, notify -c patching -l fail with what's wrong, and offer the owner a rollback
+(needs his explicit OK).
+EOF
+echo "wrote $NOTE"

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# jarvis-remind [--list]: send dated reminders to Discord. Run daily by jarvis-remind.timer.
+# Reminders live in /etc/jarvis/reminders.txt (installed from reminders.txt in the Jarvis repo):
+#   YYYY-MM-DD | Title | Message
+# Each one is sent once, on or after its date (so a day Jarvis was off still catches up), and
+# remembered in /var/lib/jarvis/reminders-sent so it never repeats.
+set -uo pipefail
+FILE=/etc/jarvis/reminders.txt
+SENT=/var/lib/jarvis/reminders-sent
+mkdir -p "$(dirname "$SENT")"; touch "$SENT"
+today=$(date +%F)
+[ -f "$FILE" ] || { echo "no $FILE"; exit 0; }
+
+while IFS='|' read -r day title msg; do
+  day=$(echo "$day" | xargs); title=$(echo "$title" | xargs); msg=$(echo "$msg" | sed 's/^ *//; s/ *$//')
+  [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+  key="$day|$title"
+  if [ "${1:-}" = "--list" ]; then
+    grep -qxF "$key" "$SENT" && state=sent || { [[ "$day" > "$today" ]] && state=upcoming || state=due; }
+    printf '%-10s %-9s %s\n' "$day" "$state" "$title"; continue
+  fi
+  [[ "$day" > "$today" ]] && continue
+  grep -qxF "$key" "$SENT" && continue
+  if notify -l info -t "Reminder: $title" "$msg"; then
+    echo "$key" >> "$SENT"; echo "sent: $key"
+  else
+    echo "failed to send: $key" >&2
+  fi
+done < <(grep -v '^\s*#' "$FILE")

@@ -1,0 +1,9 @@
+[Unit]
+Description=Jarvis - save memory and snapshot before the midnight auto-update.sh run
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/jarvis-autopatch-prep
+TimeoutStartSec=20m

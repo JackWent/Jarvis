@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# notify: send a message to the owner's Discord #jarvis channel via webhook.
+#
+#   notify "message"                       plain info message
+#   notify -l ok|warn|fail|info "message"  coloured status card
+#   notify -t "Title" -l fail "message"    card with a title
+#   notify -f /path/to/log "message"       attach a file (max ~10 MB)
+#   notify -c patching ...                 post to another channel (#server-patching)
+#   some-command | notify -t "Output"      message read from stdin
+#
+# Webhook URL is read from /root/.config/jarvis/discord-webhook (or $DISCORD_WEBHOOK); with -c NAME,
+# from /root/.config/jarvis/discord-webhook-NAME.
+set -euo pipefail
+
+level=info title="" file="" channel=""
+while getopts "l:t:f:c:h" opt; do
+  case $opt in
+    l) level=$OPTARG ;;
+    t) title=$OPTARG ;;
+    f) file=$OPTARG ;;
+    c) channel=$OPTARG ;;
+    *) sed -n '2,13p' "$0"; exit 0 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ -n "$channel" ]; then
+  [[ "$channel" =~ ^[a-z0-9-]+$ ]] || { echo "notify: bad channel name" >&2; exit 2; }
+  WEBHOOK=$(cat "/root/.config/jarvis/discord-webhook-$channel" 2>/dev/null || true)
+  [ -n "$WEBHOOK" ] || { echo "notify: no webhook for channel $channel" >&2; exit 2; }
+else
+  WEBHOOK="${DISCORD_WEBHOOK:-$(cat /root/.config/jarvis/discord-webhook 2>/dev/null || true)}"
+fi
+[ -n "$WEBHOOK" ] || { echo "notify: no webhook configured" >&2; exit 2; }
+
+msg="$*"
+[ -z "$msg" ] && [ ! -t 0 ] && msg=$(cat)
+[ -n "$msg" ] || { echo "notify: empty message" >&2; exit 2; }
+
+# Also put warnings and failures on the Jarvis Orb page, if it is installed (best effort, never blocks or fails notify).
+case $level in
+  warn|fail) command -v orb-alert >/dev/null 2>&1 && ( orb-alert -l "$level" -t "${title:-Jarvis}" "$(printf '%s' "${title:+$title. }$msg" | tr '\n' ' ' | cut -c1-220)" >/dev/null 2>&1 & ) ;;
+esac
+
+case $level in
+  ok)   color=3066993;  icon="✅" ;;
+  warn) color=15105570; icon="⚠️" ;;
+  fail) color=15158332; icon="❌" ;;
+  *)    color=3447003;  icon="ℹ️" ;;
+esac
+[ -n "$title" ] || title="$icon $(hostname)"
+[ "$title" = "${title#"$icon"}" ] && title="$icon $title"
+
+# Discord embed descriptions max out at 4096 chars; keep the tail, where errors usually are.
+if [ ${#msg} -gt 4000 ]; then msg="…${msg: -3990}"; fi
+
+payload=$(jq -n --arg t "$title" --arg d "$msg" --argjson c "$color" --arg f "$(hostname) · $(date '+%Y-%m-%d %H:%M %Z')" \
+  '{username: "Jarvis", embeds: [{title: $t, description: $d, color: $c, footer: {text: $f}}]}')
+
+for attempt in 1 2 3; do
+  if [ -n "$file" ]; then
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -F "payload_json=$payload" -F "file=@$file" "$WEBHOOK") || code=000
+  else
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK") || code=000
+  fi
+  case $code in 2??) exit 0 ;; 429|5??|000) sleep $((attempt * 2)) ;; *) break ;; esac
+done
+echo "notify: Discord returned HTTP $code" >&2
+exit 1

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# jarvis-ci-wait [repo-dir] [sha]: wait for the GitLab pipeline of a commit and report how it went.
+#   repo-dir defaults to the current directory, sha to HEAD.
+# If a job fails with a known one-off infrastructure error (package mirror or network
+# hiccup), it's retried once. Exit 0 = pipeline passed, 1 = failed (the failed job's log
+# tail is printed), 2 = no pipeline appeared.
+set -uo pipefail
+dir=${1:-.}
+cd "$dir" || exit 2
+sha=${2:-$(git rev-parse HEAD)}
+remote=$(git remote get-url origin)
+# git@host:group/repo, an SSH alias (gitlab:group/repo), ssh://host/... or https://host/...
+path=$(printf '%s' "$remote" | sed -E 's#^(https?|ssh)://[^/]+/##; s#^[^/:]+:##; s#\.git$##')
+enc=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$path")
+TRANSIENT='temporary error|try again later|TLS handshake timeout|i/o timeout|Could not resolve host|connection reset by peer|unexpected EOF|503 Service Unavailable|ETIMEDOUT|ECONNRESET'
+
+api() { glab api "$1" 2>/dev/null; }
+pipeline_id() {  # GitLab answers errors (unknown project, bad token) with an object, not a list
+  api "projects/$enc/pipelines?sha=$sha&per_page=1" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except ValueError: sys.exit()
+if isinstance(d, dict): sys.exit("GitLab: " + str(d.get("message") or d.get("error") or d))
+print(d[0]["id"] if d else "")'
+}
+status() { api "projects/$enc/pipelines/$1" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])'; }
+
+id=""
+for _ in $(seq 1 30); do id=$(pipeline_id) || exit 2; [ -n "$id" ] && break; sleep 4; done
+[ -n "$id" ] || { echo "No pipeline for ${sha:0:8} in $path (does this project have CI?)"; exit 2; }
+echo "Pipeline $id for ${sha:0:8} ($path)"
+
+retried=false
+while true; do
+  for _ in $(seq 1 180); do
+    s=$(status "$id"); case "$s" in success|failed|canceled|skipped) break;; esac; sleep 10
+  done
+  echo "Status: $s"
+  [ "$s" = success ] && exit 0
+  failed=$(api "projects/$enc/pipelines/$id/jobs?scope=failed" | python3 -c 'import sys,json;[print(j["id"],j["name"]) for j in json.load(sys.stdin)]')
+  if ! $retried && [ -n "$failed" ]; then
+    transient=true
+    while read -r jid jname; do
+      api "projects/$enc/jobs/$jid/trace" | tail -60 | grep -qiE "$TRANSIENT" || transient=false
+    done <<< "$failed"
+    if $transient; then
+      echo "Failure looks like a one-off infrastructure error; retrying the failed job(s) once."
+      while read -r jid jname; do glab api -X POST "projects/$enc/jobs/$jid/retry" >/dev/null 2>&1 && echo "  retried $jname"; done <<< "$failed"
+      retried=true; sleep 10; continue
+    fi
+  fi
+  while read -r jid jname; do
+    [ -n "$jid" ] || continue
+    echo "---- failed job: $jname ($jid), last lines:"
+    api "projects/$enc/jobs/$jid/trace" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | tail -25
+  done <<< "$failed"
+  exit 1
+done

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# jarvis-snapshot: Proxmox VM snapshots for patching and reboots, limited to Jarvis's own.
+#
+#   jarvis-snapshot create <server> [label]    snapshot named jarvis-<label>-YYYYMMDD-HHMM (disk only)
+#   jarvis-snapshot list <server>              list the VM's snapshots
+#   jarvis-snapshot delete <server> <name>     delete ONE snapshot; only names starting "jarvis-"
+#   jarvis-snapshot prune <server> [days]      delete this VM's jarvis-* snapshots older than N days (default 3)
+#
+# <server> is a server name from ~/.ssh/config (wazuh, gitlab-runner, ...). Each maps to a VM ID
+# below, and the VM's name on Proxmox is checked before acting, so a renumbered VM is never
+# touched by mistake. Snapshots not made by Jarvis (any name not starting "jarvis-") can't be
+# deleted with this tool.
+set -uo pipefail
+
+# server -> "vmid:expected Proxmox VM name"
+declare -A VMS=(
+  [gitlab-host]="100:Gitlab" [app]="101:App" [containers]="103:Containers"
+  [unifi-server]="104:Unifi-Server" [gitlab-runner]="105:Gtilab-Runner" [wazuh]="106:Wazuh"
+  [bitwarden]="107:Bitwarden" [plex]="108:Plex" [virtualmin]="110:Virtualmin" [jarvis]="111:Jarvis" [web-server]="112:Web-Server"
+)
+die() { echo "jarvis-snapshot: $*" >&2; exit 1; }
+pve() { ssh -o BatchMode=yes -o ConnectTimeout=8 proxmox "$@"; }
+
+cmd=${1:-}; server=${2:-}
+[ -n "$cmd" ] && [ -n "$server" ] || { sed -n '2,13p' "$0"; exit 2; }
+entry=${VMS[$server]:-} || true
+[ -n "$entry" ] || die "'$server' isn't a known Proxmox VM (known: ${!VMS[*]}). Immich, Home Assistant and the NAS aren't VMs on this Proxmox host."
+vmid=${entry%%:*}; want=${entry#*:}
+actual=$(pve "qm config $vmid 2>/dev/null | sed -n 's/^name: //p'") || die "couldn't reach Proxmox"
+[ "$actual" = "$want" ] || die "VM $vmid is called '$actual', expected '$want'. Not touching it; update the table in this script."
+
+case "$cmd" in
+  create)
+    label=$(printf '%s' "${3:-snapshot}" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-20)
+    name="jarvis-${label}-$(date +%Y%m%d-%H%M)"
+    pve "qm snapshot $vmid $name --description 'Taken by Jarvis $(date -Is)'" >/dev/null 2>&1 \
+      || die "snapshot of $server (VM $vmid) failed: its disks may not support snapshots"
+    echo "$name"
+    ;;
+  list)
+    pve "qm listsnapshot $vmid"
+    ;;
+  delete)
+    snap=${3:-}
+    [[ "$snap" =~ ^jarvis-[A-Za-z0-9_-]+$ ]] || die "only snapshots Jarvis made (named jarvis-...) can be deleted with this tool"
+    pve "qm listsnapshot $vmid" | grep -qE "(^|[^A-Za-z0-9_-])$snap( |$)" || die "$server has no snapshot called $snap"
+    pve "qm delsnapshot $vmid $snap" >/dev/null || die "couldn't delete $snap"
+    echo "deleted $snap from $server (VM $vmid)"
+    ;;
+  prune)
+    days=${3:-3}; [[ "$days" =~ ^[0-9]+$ ]] || die "days must be a number"
+    cutoff=$(date -d "-$days days" +%Y%m%d%H%M)
+    n=0
+    for snap in $(pve "qm listsnapshot $vmid" | grep -oE 'jarvis-[A-Za-z0-9_-]+-[0-9]{8}-[0-9]{4}' | sort -u); do
+      stamp=$(printf '%s' "$snap" | grep -oE '[0-9]{8}-[0-9]{4}$' | tr -d -)
+      if [ "$stamp" -lt "$cutoff" ]; then pve "qm delsnapshot $vmid $snap" >/dev/null && echo "deleted $snap" && n=$((n+1)); fi
+    done
+    echo "$server: pruned $n snapshot(s) older than $days day(s)"
+    ;;
+  *) die "unknown command '$cmd'" ;;
+esac

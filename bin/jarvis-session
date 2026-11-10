@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Starts the universal Jarvis session, reachable via Remote Control as "Jarvis" in the Claude app
+# (PC and phone). Run by jarvis-session.service inside tmux.
+# If a planned reboot left /root/jarvis/state/pending-reboot.md behind, the session starts with a prompt
+# to verify the reboot and report to the owner, instead of sitting idle until someone messages it.
+cd /root/jarvis || exit 1
+args=(--remote-control Jarvis --permission-mode auto)
+if [ -f state/pending-reboot.md ]; then
+  exec claude "${args[@]}" "A planned reboot has just completed and this is a fresh session. Read state/pending-reboot.md, check that everything listed came back (Proxmox, the VMs, services, and the HA '<Name> Agent Online' sensors), then report the outcome to the owner: post it with notify and summarise it here. Include anything that failed. Delete state/pending-reboot.md once you've reported."
+fi
+exec claude "${args[@]}"

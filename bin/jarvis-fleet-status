@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""jarvis-fleet-status: read-only health check of every server, Proxmox, Home Assistant and backups.
+
+  jarvis-fleet-status            print the report (exit 0 = all fine, 1 = something needs attention)
+  jarvis-fleet-status --notify   also post to Discord #jarvis, but only when something needs attention
+  jarvis-fleet-status --json     machine-readable output
+  jarvis-fleet-status <server>   just one server (e.g. after patching it)
+
+Checks (all read-only): reachable over SSH, pending apt updates, reboot required, root disk use,
+failed systemd units; Proxmox VMs that should be running and storage use; Home Assistant core/OS/
+supervisor/app updates; App platform and workspace backups; Jarvis's own memory backup; Wazuh still
+indexing alerts (it silently stopped for six months in 2026 when it hit its shard limit).
+"""
+import json, subprocess, sys, concurrent.futures as cf
+from datetime import datetime, timezone
+
+SERVERS = ["proxmox", "gitlab-host", "gitlab-runner", "containers", "web-server", "bitwarden", "immich", "wazuh",
+           "plex", "app", "unifi-server"]
+STOPPED_OK = {"Ubuntu-Desktop", "Win10", "Virtualmin"}   # Proxmox VMs that are normally off (Virtualmin retired 2026-10-15)
+DISK_WARN, STORE_WARN = 85, 85
+
+def sh(cmd, timeout=40):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out"
+
+def ssh(host, script, timeout=40):
+    return sh(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, script], timeout)
+
+PROBE = r'''
+u=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+rr=$([ -f /var/run/reboot-required ] && echo 1 || echo 0)
+d=$(df -P / | awk 'NR==2{gsub("%","",$5);print $5}')
+f=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | paste -sd, -)
+up=$(awk '{print int($1/86400)}' /proc/uptime)
+echo "$u|$rr|$d|$f|$up"
+'''
+
+def check_server(host):
+    rc, out, err = ssh(host, PROBE)
+    if rc != 0 or out.count("|") != 4:
+        return {"host": host, "reachable": False, "error": (err or out or f"exit {rc}")[:120]}
+    u, rr, d, f, up = out.split("|")
+    return {"host": host, "reachable": True, "updates": int(u or 0), "reboot": rr == "1", "disk": int(d or 0),
+            "failed": [x for x in f.split(",") if x], "uptimeDays": int(up or 0)}
+
+def check_local():
+    rc, out, _ = sh(["bash", "-c", PROBE])
+    u, rr, d, f, up = out.split("|")
+    r = {"host": "jarvis", "reachable": True, "updates": int(u or 0), "reboot": rr == "1", "disk": int(d or 0),
+         "failed": [x for x in f.split(",") if x], "uptimeDays": int(up or 0)}
+    rc, res, _ = sh(["systemctl", "show", "-p", "Result,ExecMainExitTimestamp", "--value", "jarvis-memory-backup.service"])
+    r["memoryBackup"] = res.splitlines()[0] if res else "unknown"
+    return r
+
+def check_proxmox():
+    rc, out, err = ssh("proxmox", "qm list | tail -n +2; echo ---; pvesm status | tail -n +2")
+    if rc != 0: return {"error": err[:120]}
+    vms, stores = out.split("---")
+    down = [l.split()[1] for l in vms.strip().splitlines() if len(l.split()) > 2 and l.split()[2] != "running" and l.split()[1] not in STOPPED_OK]
+    full = []
+    for l in stores.strip().splitlines():
+        p = l.split()
+        if len(p) >= 7 and p[2] == "active":
+            pct = float(p[6].rstrip("%"))
+            if pct >= STORE_WARN: full.append(f"{p[0]} {pct:.0f}%")
+    return {"vmsDown": down, "storageFull": full}
+
+def check_ha():
+    script = r'''for c in core os supervisor; do ha $c info --raw-json 2>/dev/null | jq -r --arg c $c '.data | "\($c) \(.version) \(.version_latest) \(.update_available)"'; done
+ha apps --raw-json 2>/dev/null | jq -r '(.data.addons // .data.apps)[] | select(.update_available) | "app \(.name) \(.version) \(.version_latest) true"' '''
+    rc, out, err = ssh("homeassistant", script)
+    if rc != 0 and not out: return {"error": (err or "unreachable")[:120]}
+    ups = [l.split(" ", 1)[1] for l in out.splitlines() if l.endswith(" true")]
+    return {"updates": [" ".join(u.split()[:-1]) for u in ups]}
+
+def check_app():
+    js = r'''const pb=require("./lib/platformBackup"),ps=require("./lib/platformSettings");
+(async()=>{const o=await pb.overview();const w=await ps.get("backup_last_run",null);
+const res=(w&&w.results||[]).filter(r=>r.slug!=="platform");
+console.log(JSON.stringify({platformLast:o.backups[0]?{id:o.backups[0].id,status:o.backups[0].status}:null,lastSuccess:o.lastSuccess,enabled:o.config.enabled,
+freq:o.config.frequency,workspaceRun:w?w.startedAt:null,workspaceFailed:res.filter(r=>!r.db).map(r=>r.slug)}));process.exit(0)})().catch(e=>{console.log(JSON.stringify({error:e.message}));process.exit(0)})'''
+    rc, out, err = ssh("app", f"cd /opt/app-infra && docker exec $(docker compose -f docker-compose.platform.yml ps -q provisioner) node -e '{js}'")
+    try: return json.loads(out.splitlines()[-1])
+    except Exception: return {"error": (err or out or "no answer")[:120]}
+
+def check_wazuh():
+    # Alerts indexed in the last 6 hours, plus cluster health. A normal day is thousands of alerts, so none
+    # means indexing has stopped (as it did from April to October 2026, unnoticed, when the shard limit was hit).
+    q = '{"query":{"range":{"timestamp":{"gte":"now-6h"}}}}'
+    script = ("C='--cert /etc/wazuh-indexer/certs/admin.pem --key /etc/wazuh-indexer/certs/admin-key.pem "
+              "--cacert /etc/wazuh-indexer/certs/root-ca.pem'; "
+              "sudo curl -s $C https://127.0.0.1:9200/_cluster/health; echo; "
+              f"sudo curl -s $C -H 'Content-Type: application/json' 'https://127.0.0.1:9200/wazuh-alerts-*/_count' -d '{q}'")
+    rc, out, err = ssh("wazuh", script)
+    try:
+        health, count = [json.loads(l) for l in out.splitlines()[:2]]
+        return {"status": health["status"], "alerts6h": count["count"]}
+    except Exception:
+        return {"error": (err or out or f"exit {rc}")[:120]}
+
+def problems(r):
+    out = []
+    for s in r["servers"]:
+        h = s["host"]
+        if not s["reachable"]: out.append(f"{h}: unreachable ({s['error']})"); continue
+        if s["failed"]: out.append(f"{h}: failed services {', '.join(s['failed'])}")
+        if s["disk"] >= DISK_WARN: out.append(f"{h}: root disk {s['disk']}% full")
+        if s["reboot"]: out.append(f"{h}: reboot required")
+        if s["updates"]: out.append(f"{h}: {s['updates']} update(s) pending")
+        if s.get("memoryBackup") not in (None, "success", "unknown"): out.append(f"{h}: last memory backup {s['memoryBackup']}")
+    p = r.get("proxmox", {})
+    if p.get("error"): out.append(f"proxmox: couldn't list VMs ({p['error']})")
+    if p.get("vmsDown"): out.append(f"proxmox: VMs not running: {', '.join(p['vmsDown'])}")
+    if p.get("storageFull"): out.append(f"proxmox: storage nearly full: {', '.join(p['storageFull'])}")
+    ha = r.get("homeassistant", {})
+    if ha.get("error"): out.append(f"home assistant: couldn't check ({ha['error']})")
+    for u in ha.get("updates", []): out.append(f"home assistant: update for {u}")
+    wz = r.get("wazuh", {})
+    if wz.get("error"): out.append(f"wazuh: couldn't check the indexer ({wz['error']})")
+    elif wz:
+        if wz.get("status") != "green": out.append(f"wazuh: indexer cluster is {wz.get('status')}")
+        if wz.get("alerts6h") == 0: out.append("wazuh: no alerts indexed in the last 6 hours (indexing may have stopped)")
+    sv = r.get("app", {})
+    if sv.get("error"): out.append(f"app backups: couldn't check ({sv['error']})")
+    else:
+        if sv.get("platformLast") and sv["platformLast"]["status"] != "success": out.append(f"app: last platform backup {sv['platformLast']['status']} ({sv['platformLast']['id']})")
+        if sv.get("enabled") is False: out.append("app: automatic platform backups are off")
+        if sv.get("lastSuccess"):
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(sv["lastSuccess"].replace("Z", "+00:00"))).days
+            if age >= (8 if sv.get("freq") == "weekly" else 2): out.append(f"app: no good platform backup for {age} days")
+        elif "lastSuccess" in sv: out.append("app: no successful platform backup yet")
+        if sv.get("workspaceFailed"): out.append(f"app: workspace backups failed for {', '.join(sv['workspaceFailed'])}")
+    return out
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    one = args[0] if args else None
+    with cf.ThreadPoolExecutor(max_workers=12) as ex:
+        hosts = [one] if one and one != "jarvis" else ([] if one == "jarvis" else SERVERS)
+        futs = {h: ex.submit(check_server, h) for h in hosts}
+        extra = {} if one else {"proxmox": ex.submit(check_proxmox), "homeassistant": ex.submit(check_ha), "app": ex.submit(check_app), "wazuh": ex.submit(check_wazuh)}
+        servers = [futs[h].result() for h in hosts] + ([check_local()] if not one or one == "jarvis" else [])
+        report = {"at": datetime.now().isoformat(timespec="minutes"), "servers": servers, **{k: f.result() for k, f in extra.items()}}
+    issues = problems(report)
+    report["problems"] = issues
+    if "--json" in sys.argv:
+        print(json.dumps(report, indent=1))
+    else:
+        for s in servers:
+            print(f"{s['host']:14} " + (f"UNREACHABLE {s['error']}" if not s["reachable"] else
+                  f"updates {s['updates']:>2}  reboot {'YES' if s['reboot'] else 'no '}  disk {s['disk']:>3}%  up {s['uptimeDays']:>3}d  failed: {', '.join(s['failed']) or 'none'}"))
+        if not one:
+            p, ha, sv = report["proxmox"], report["homeassistant"], report["app"]
+            print(f"proxmox        VMs down: {', '.join(p.get('vmsDown', [])) or 'none'}; storage warnings: {', '.join(p.get('storageFull', [])) or 'none'}")
+            print(f"homeassistant  updates: {', '.join(ha.get('updates', [])) or ha.get('error') or 'none'}")
+            wz = report["wazuh"]
+            print(f"wazuh          indexer: {wz.get('status') or wz.get('error')}; alerts in last 6h: {wz.get('alerts6h', '?')}")
+            print(f"app    platform backup: {sv.get('platformLast') or sv.get('error')}; last good {sv.get('lastSuccess')}")
+        print("\nNeeds attention:\n  " + "\n  ".join(issues) if issues else "\nAll good.")
+    if "--notify" in sys.argv and issues:
+        subprocess.run(["notify", "-l", "warn", "-t", f"Fleet check: {len(issues)} thing(s) need attention", "\n".join(f"• {i}" for i in issues)])
+    sys.exit(1 if issues else 0)
+
+if __name__ == "__main__":
+    main()

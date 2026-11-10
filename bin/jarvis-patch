@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# jarvis-patch [--force-phased] <host> — apt update + upgrade on one known server over SSH.
+# --force-phased: also install updates Ubuntu is still phasing out (Always-Include-Phased-Updates).
+# Only patches; no reboot. Snapshot first (Jarvis does that via Proxmox) and notify after.
+# Log: /var/log/jarvis-patch/<host>-<timestamp>.log
+set -uo pipefail
+
+ALLOWED="gitlab-host gitlab-runner containers web-server bitwarden immich wazuh plex virtualmin app unifi-server proxmox"
+
+phased=false
+if [[ "${1:-}" == --force-phased ]]; then phased=true; shift; fi
+host="${1:-}"
+if [[ -z "$host" || "$host" == -h || "$host" == --help ]]; then
+  echo "usage: jarvis-patch [--force-phased] <host>   (one of: $ALLOWED)"; exit 2
+fi
+if [[ " $ALLOWED " != *" $host "* ]]; then
+  echo "jarvis-patch: '$host' is not a known server (allowed: $ALLOWED)" >&2; exit 2
+fi
+
+logdir=/var/log/jarvis-patch
+mkdir -p "$logdir"
+log="$logdir/$host-$(date +%Y%m%d-%H%M%S).log"
+
+ssh -o BatchMode=yes "$host" "PHASED=$phased bash -s" <<'REMOTE' 2>&1 | tee "$log"
+export DEBIAN_FRONTEND=noninteractive
+echo "== $(hostname) $(date -Is)"
+apt-get update -q || { echo "RESULT: apt-get update FAILED"; exit 1; }
+extra=(); [ "$PHASED" = true ] && extra=(-o APT::Get::Always-Include-Phased-Updates=true) && echo "(including phased updates)"
+out=$(mktemp)
+apt-get -y -q "${extra[@]}" -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade 2>&1 | tee "$out"
+rc=${PIPESTATUS[0]}
+# Packages apt reports as "kept back" only install when named: apt install <pkg>.
+held=$(sed -n '/have been kept back:/,/^[^ ]/{/^ /p}' "$out" | xargs)
+rm -f "$out"
+if [ $rc -eq 0 ] && [ -n "$held" ]; then
+  echo "== installing kept-back packages: $held"
+  apt-get -y -q "${extra[@]}" -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install --only-upgrade $held
+  rc=$?
+fi
+echo "== remaining upgradable:"
+apt list --upgradable 2>/dev/null | tail -n +2
+if [ -f /var/run/reboot-required ]; then
+  echo "REBOOT REQUIRED: $(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)"
+else
+  echo "reboot required: no"
+fi
+echo "== failed units:"; systemctl --failed --no-legend
+[ $rc -eq 0 ] && echo "RESULT: OK" || echo "RESULT: apt-get upgrade FAILED (exit $rc)"
+exit $rc
+REMOTE
+rc=${PIPESTATUS[0]}
+echo "log: $log"
+exit $rc

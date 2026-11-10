@@ -1,0 +1,12 @@
+[Unit]
+Description=Jarvis - daily fleet health check (posts to Discord only if something needs attention)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/jarvis-fleet-status --notify
+# Exit code 1 just means "something needs attention" (already posted), not a failed run.
+SuccessExitStatus=1
