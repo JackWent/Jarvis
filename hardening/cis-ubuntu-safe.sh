@@ -4,7 +4,7 @@
 #
 # Deliberately NOT done (and why) - see hardening/README.md:
 #   root SSH login (Jarvis uses it), firewall, separate partitions, /tmp noexec, bootloader password,
-#   AppArmor enforce-all, password expiry/lockout, auditd, AIDE, root umask, shell timeout,
+#   AppArmor enforce-all, password expiry/lockout, `at` (the check wants the package installed), log file modes, auditd, AIDE, root umask, shell timeout,
 #   blocking NFS/FUSE/FAT modules, sudo logfile (sudo-rs has no such option).
 set -uo pipefail
 say() { printf '  %-34s %s\n' "$1" "$2"; }
@@ -180,6 +180,22 @@ if [ -f /etc/chrony/chrony.conf ] && ! grep -qE '^\s*user\s+_chrony' /etc/chrony
   echo "user _chrony" >> /etc/chrony/chrony.conf
   chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1 && systemctl restart chrony && say "chrony" "user _chrony" ||
     { sed -i '/^user _chrony$/d' /etc/chrony/chrony.conf; say "chrony" "config test failed - left as it was"; }
+fi
+
+# --- inactive password lock (5.4.1.5) --------------------------------------------------------------
+# Only bites 45 days after a password has expired, and none expire here, so it changes nothing day to day.
+useradd -D -f 45
+awk -F: '$2 ~ /^\$/ {print $1}' /etc/shadow | while read -r u; do chage --inactive 45 "$u"; done
+say "inactive password lock" "45 days (default and accounts with a password)"
+
+# --- AppArmor stated in the bootloader (1.3.1.1) ------------------------------------------------------
+# Ubuntu already boots with AppArmor on; this only writes it down where CIS looks. Takes effect at the next boot.
+# Not on Proxmox (it may boot with systemd-boot, and the host is never rebooted casually).
+if [ -z "${PROXMOX:-}" ] && [ -f /etc/default/grub ] && ! grep -q 'apparmor=1' /etc/default/grub; then
+  cp -a /etc/default/grub /etc/default/grub.before-cis
+  sed -i -E 's|^(GRUB_CMDLINE_LINUX=")([^"]*)"|\1\2 apparmor=1 security=apparmor"|; s|^(GRUB_CMDLINE_LINUX=") |\1|' /etc/default/grub
+  if update-grub >/dev/null 2>&1; then say "AppArmor in grub" "apparmor=1 security=apparmor (next boot)"
+  else cp -a /etc/default/grub.before-cis /etc/default/grub; update-grub >/dev/null 2>&1; say "AppArmor in grub" "update-grub failed - put back as it was"; fi
 fi
 
 # --- services ---------------------------------------------------------------------------------
