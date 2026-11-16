@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CIS hardening for the homelab's Ubuntu 26.04 servers: only the items that don't change how a
-# server is used. Runs ON the server as root (copied there by jarvis-harden). Safe to re-run.
+# server is used. Runs ON the server as root (copy it over with scp and run it with bash). Safe to re-run.
 #
 # Deliberately NOT done (and why) - see hardening/README.md:
 #   root SSH login (Jarvis uses it), firewall, separate partitions, /tmp noexec, bootloader password,

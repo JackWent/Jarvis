@@ -1,0 +1,15 @@
+# Leaves state/pending-reboot.md behind when auto-update.sh reboots this VM mid-run (see bin/jarvis-pre-reboot).
+# Started at boot and does nothing until shutdown, when ExecStop runs.
+[Unit]
+Description=Jarvis - reboot note when auto-update.sh reboots this VM
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/jarvis-pre-reboot
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
