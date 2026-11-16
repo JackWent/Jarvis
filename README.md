@@ -24,7 +24,7 @@
   <img src="docs/architecture.svg" alt="How Jarvis fits together: you reach a Claude Code session on an Ubuntu VM through Remote Control; it follows runbooks and calls guarded tools that reach the servers, Proxmox, Home Assistant and GitLab CI, and reports to Discord" width="100%">
 </p>
 
-Giving an AI a root shell and hoping for the best is easy. Jarvis does it differently. It's a [Claude Code](https://claude.com/claude-code) session that lives on a small VM, does its work through a handful of **purpose-built scripts with guardrails** instead of raw commands, follows **written runbooks**, and reports **every outcome** to Discord. I reach it from the Claude app on my phone or PC with Remote Control.
+Giving an AI a root shell and hoping for the best is easy. Jarvis does it differently. It's a [Claude Code](https://claude.com/claude-code) session that lives on a small VM, does its work through a handful of **purpose-built scripts with guardrails** instead of raw commands, follows **written runbooks**, and reports **every outcome** to Discord. I type to it from the Claude app on my phone or PC with Remote Control, or just talk to it through the **Jarvis Orb**, a voice web page.
 
 This repo is a cleaned-up copy of what it runs on. Hostnames, addresses and personal details are replaced with generic names, so treat it as a **starting point to adapt**, not something to run as it is.
 
@@ -43,6 +43,7 @@ This repo is a cleaned-up copy of what it runs on. Hostnames, addresses and pers
 ## How it fits together
 
 - **The session:** `jarvis-session` starts Claude Code inside tmux on a small Ubuntu VM. A systemd service keeps it running, and Claude's Remote Control makes it reachable from the Claude app on a phone or PC.
+- **The voice:** the [Jarvis Orb](https://jackwent.co.uk/jarvis-talking-web-page/) is a web page with a glowing orb that listens for "Hey Jarvis". The wake word model runs in the browser, so no audio leaves the page until it hears it. Speech goes through Whisper and replies come back through Piper, both on my own hardware, and the same long-running Claude session does the thinking. It also shows live Home Assistant alerts, can put images or camera snapshots on screen, and can be locked to my voice. Risky jobs never happen by voice: they wait for my OK in the app. The page itself isn't in this repo.
 - **The tools:** small scripts the session calls instead of typing raw commands, so each action has guardrails. For example, `jarvis-snapshot` can only delete snapshots whose names start with `jarvis-`.
 - **The runbooks:** `skills/` holds step-by-step instructions the assistant follows for patching, rebooting and fleet checks.
 - **The timers:** systemd timers run the daily health check, the reminders and the pre-patch preparation as plain scripts.
@@ -78,6 +79,7 @@ Edit the host lists at the top of `jarvis-fleet-status`, `jarvis-patch` and `jar
 
 ## Related
 
+- [Hey Jarvis: A Web Page I Can Talk To](https://jackwent.co.uk/jarvis-talking-web-page/): the write-up of the Jarvis Orb voice page, with a demo video.
 - [Jarvis-AI-Desktop](https://github.com/JackWent/Jarvis-AI-Desktop): a 2.5 MB Tauri (Rust) Windows tray app that my family uses to talk to Jarvis.
 - [Ubuntu-Auto-Update](https://github.com/JackWent/Ubuntu-Auto-Update): the nightly patch script Jarvis's own VM runs.
 - [HA-MQTT-Agent](https://github.com/JackWent/HA-MQTT-Agent): puts every server in Home Assistant. Jarvis checks its *Agent Online* sensors after a reboot.

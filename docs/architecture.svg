@@ -1,6 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" width="960" height="420" font-family="'Segoe UI',system-ui,-apple-system,sans-serif" role="img" aria-label="Jarvis architecture: the owner talks to a Claude Code session on an Ubuntu VM through Remote Control. The session follows runbooks and calls guarded scripts that reach the servers over SSH, Proxmox for snapshots, Home Assistant and GitLab CI, and reports to Discord. systemd timers run the morning health check, reminders and pre-patch preparation.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" width="960" height="420" font-family="'Segoe UI',system-ui,-apple-system,sans-serif" role="img" aria-label="Jarvis architecture: the owner types to a Claude Code session on an Ubuntu VM through Remote Control, or talks to it through the Jarvis Orb voice page (wake word, Whisper speech to text, Piper speech). The session follows runbooks and calls guarded scripts that reach the servers over SSH, Proxmox for snapshots, Home Assistant and GitLab CI, and reports to Discord. systemd timers run the morning health check, reminders and pre-patch preparation.">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#ffb000"/></marker>
+    <radialGradient id="orbg" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#fff3d0"/><stop offset="45%" stop-color="#ffb000"/><stop offset="100%" stop-color="#7a5a1a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="og" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
     <style>
       .box { fill: #1e1913; stroke: #3a3127; }
       .h { fill: #eadfcb; font-weight: 600; font-size: 13px; }
@@ -8,22 +12,33 @@
       .m { font-family: Consolas, 'DejaVu Sans Mono', monospace; }
       .ln { stroke: #ffb000; stroke-width: 1.5; fill: none; }
       .dot { animation: blink 2s ease-in-out infinite; }
+      .orb2 { animation: ring 2.2s ease-out infinite; transform-origin: 114px 174px; }
+      @keyframes ring { 0% { transform: scale(0.9); opacity: 0.9; } 100% { transform: scale(1.7); opacity: 0; } }
       @keyframes blink { 50% { opacity: 0.25; } }
-      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+      @media (prefers-reduced-motion: reduce) { .dot, .orb2 { animation: none; } }
     </style>
   </defs>
   <rect width="960" height="420" rx="14" fill="#15110c"/>
 
   <!-- People side -->
-  <rect class="box" x="24" y="70" width="180" height="84" rx="8"/>
-  <text x="114" y="98" text-anchor="middle" class="h">You</text>
-  <text x="114" y="118" text-anchor="middle" class="s">Claude app on phone or PC</text>
-  <text x="114" y="134" text-anchor="middle" class="s">via Remote Control</text>
+  <rect class="box" x="24" y="56" width="180" height="70" rx="8"/>
+  <text x="114" y="82" text-anchor="middle" class="h">You, typing</text>
+  <text x="114" y="100" text-anchor="middle" class="s">Claude app on phone or PC</text>
+  <text x="114" y="115" text-anchor="middle" class="s">via Remote Control</text>
 
-  <rect class="box" x="24" y="250" width="180" height="84" rx="8"/>
-  <text x="114" y="278" text-anchor="middle" class="h">Discord</text>
-  <text x="114" y="298" text-anchor="middle" class="s">every outcome, failures too</text>
-  <text x="114" y="314" text-anchor="middle" class="s m">bin/notify</text>
+  <rect x="24" y="140" width="180" height="140" rx="8" fill="#1e1913" stroke="#ffb000"/>
+  <circle class="orb2" cx="114" cy="174" r="17" fill="none" stroke="#ffb000" stroke-width="1.2"/>
+  <circle cx="114" cy="174" r="15" fill="url(#orbg)" filter="url(#og)"/>
+  <text x="114" y="212" text-anchor="middle" class="h">Jarvis Orb, talking</text>
+  <text x="114" y="229" text-anchor="middle" class="s">“Hey Jarvis” in a web page</text>
+  <text x="114" y="244" text-anchor="middle" class="s">Whisper → Claude → Piper</text>
+  <text x="114" y="259" text-anchor="middle" class="s">alerts, screens, voice lock</text>
+  <text x="114" y="273" text-anchor="middle" class="s">also in the desktop app</text>
+
+  <rect class="box" x="24" y="296" width="180" height="70" rx="8"/>
+  <text x="114" y="322" text-anchor="middle" class="h">Discord</text>
+  <text x="114" y="340" text-anchor="middle" class="s">every outcome, failures too</text>
+  <text x="114" y="355" text-anchor="middle" class="s m">bin/notify</text>
 
   <!-- The VM -->
   <rect x="250" y="44" width="420" height="340" rx="12" fill="#0c0a07" stroke="#ffb000"/>
@@ -74,13 +89,14 @@
   </g>
 
   <!-- Arrows -->
-  <path class="ln" d="M205 112 H268" marker-start="url(#a)" marker-end="url(#a)"/>
-  <path class="ln" d="M268 320 C230 320, 230 292, 207 292" marker-end="url(#a)"/>
+  <path class="ln" d="M205 100 C238 100, 238 108, 268 108" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="ln" d="M205 200 C240 200, 240 134, 268 134" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="ln" d="M268 330 C236 330, 236 331, 207 331" marker-end="url(#a)"/>
   <path class="ln" d="M651 200 C690 200, 690 75, 713 75" marker-end="url(#a)"/>
   <path class="ln" d="M651 208 C690 208, 690 153, 713 153" marker-end="url(#a)"/>
   <path class="ln" d="M651 216 C690 216, 690 231, 713 231" marker-end="url(#a)"/>
   <path class="ln" d="M651 224 C690 224, 690 309, 713 309" marker-end="url(#a)"/>
 
   <text x="24" y="30" font-size="15" font-weight="700" fill="#ffb000">How Jarvis fits together</text>
-  <text x="24" y="400" class="s">Never reboots the hypervisor, Home Assistant, the router or the NAS without a yes. Secrets live outside the repo.</text>
+  <text x="24" y="400" class="s">Never reboots the hypervisor, Home Assistant, the router or the NAS without a yes, and risky jobs never happen by voice. Secrets live outside the repo.</text>
 </svg>
